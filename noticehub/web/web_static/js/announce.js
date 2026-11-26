@@ -1,0 +1,465 @@
+// ---- 公告块：从 page.html 原样拆出（未改逻辑）。依赖 page.html 里的 api()/safeUrl() 与页面 DOM。----
+var announcementState = null;
+function getDismissedAnnouncements() {
+  try { var value = JSON.parse(localStorage.getItem('seen_announce_ids') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+var announceNoticeIds = [];
+// 用户点 × 关掉公告通知：与旧横幅的「关闭」同一份持久化（seen_announce_ids，最多留 100 条）。
+function persistDismissedAnnouncement(id) {
+  var ids = getDismissedAnnouncements(); ids.push(String(id));
+  try { localStorage.setItem('seen_announce_ids', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {}
+}
+function renderAnnouncementBanner() {
+  // 公告不再占页头那条横幅：改走右上角悬浮通知（与「还有 N 项没配好」同一个堆叠容器，
+  // 但插在它上面——公告更需要先被看到）。点通知打开原公告详情弹窗。
+  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
+  var read = getAnnounceRead();
+  var dismissed = getDismissedAnnouncements();
+  var seen = getAnnounceModalSeen();
+  var visible = items.filter(function (entry) {
+    if (!entry || !entry.id) return false;
+    var id = String(entry.id);
+    if (read.indexOf(id) !== -1 || dismissed.indexOf(id) !== -1 || seen.indexOf(id) !== -1) return false;
+    return true;
+  });
+  if (!window.NHNotify) return;
+  // 先撤掉不再展示的公告卡，避免已读之后还挂在屏幕上。
+  (announceNoticeIds || []).forEach(function (id) {
+    if (!visible.some(function (entry) { return 'announce-' + entry.id === id; })) window.NHNotify.dismiss(id);
+  });
+  announceNoticeIds = visible.map(function (entry) { return 'announce-' + entry.id; });
+  visible.forEach(function (item, index) {
+    var level = String(item.level || 'info');
+    var mapped = level === 'critical' ? 'critical' : level === 'warning' ? 'warn' : 'info';
+    window.NHNotify.push({
+      id: 'announce-' + item.id,
+      level: mapped,
+      title: String(item.title || '公告'),
+      body: [item.date, String(item.body || item.content || item.description || '').split('\n')[0]].filter(Boolean).join(' · '),
+      actionLabel: '查看',
+      priority: true,                 // 压在体检提示之上
+      dismissible: !item.seen_required, // 必须确认的公告不给 ×
+      // 公告卡一律 sticky：不挂 6 秒自动消失（那是用户报的「通知突然消失」），
+      // 挂到用户查看/标已读/点 × 才撤。
+      sticky: true,
+      onOpen: function () {
+        announceModalIndex = index;
+        renderAnnounceModal();
+        var modal = document.getElementById('announce-modal');
+        if (modal) { modal.hidden = false; var ok = document.getElementById('announce-modal-ok'); if (ok) ok.focus(); }
+      },
+      onDismiss: function () { persistDismissedAnnouncement(item.id); }
+    });
+  });
+}
+function renderAnnouncementList() {
+  var list = document.getElementById('announce-list');
+  if (!list) return;
+  list.textContent = '';
+  var items = announcementState && Array.isArray(announcementState.items) ? announcementState.items : [];
+  if (!items.length) {
+    var note = document.createElement('p'); note.className = 'announcement-muted';
+    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…'; list.appendChild(note); return;
+  }
+  items.forEach(function (item) {
+    var entry = document.createElement('details'); entry.className = 'announcement-entry';
+    var summary = document.createElement('summary'); summary.textContent = [item.title, item.date, item.level || 'info'].filter(Boolean).join(' · '); entry.appendChild(summary);
+    var body = document.createElement('pre'); body.textContent = String(item.body || item.content || item.description || ''); entry.appendChild(body);
+    list.appendChild(entry);
+  });
+}
+// ---- 公告铃铛（吸顶栏未读提醒 + 公告面板）----
+// 产品规矩：任何**用户可见**的改动都必须新增一条公告（写进 announcements.json），
+// 用户在铃铛里能看到「这版改了什么」；没公告的可见改动不合并。
+var ANNOUNCE_READ_KEY = 'nh_ann_read';
+// 上次「强制刷新公告」的时刻（毫秒）：铃铛点开最多 30 秒打一次网络。
+var announceForcedAt = 0;
+function getAnnounceRead() {
+  try { var value = JSON.parse(localStorage.getItem(ANNOUNCE_READ_KEY) || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+function markAnnounceRead(ids) {
+  var list = getAnnounceRead();
+  (ids || []).forEach(function (id) { if (id != null && id !== '') list.push(String(id)); });
+  try { localStorage.setItem(ANNOUNCE_READ_KEY, JSON.stringify(Array.from(new Set(list)).slice(-200))); } catch (error) {}
+}
+// 面板列所有公告，按日期倒序（同日期保持服务端顺序）。
+function announceItems() {
+  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id; });
+  return items.slice().sort(function (a, b) { return String(b.date || '').localeCompare(String(a.date || '')); });
+}
+function announcementsUnreadCount() {
+  var read = getAnnounceRead();
+  return announceItems().filter(function (item) { return !read.includes(String(item.id)); }).length;
+}
+function renderAnnounceBell() {
+  var badge = document.getElementById('announce-bell-badge');
+  var bell = document.getElementById('announce-bell');
+  var count = announcementsUnreadCount();
+  // 有未读就点一个红点，条数只留给读屏（aria-label）和面板里的列表。
+  if (badge) { badge.hidden = count <= 0; }
+  if (bell) bell.setAttribute('aria-label', count > 0 ? ('通知与公告，' + count + ' 条新公告') : '通知与公告');
+}
+function announcePanelItemNode(item, unread) {
+  var wrap = document.createElement('article');
+  wrap.className = 'announce-panel-item' + (unread ? ' is-unread' : '');
+  var head = document.createElement('div'); head.className = 'announce-panel-item-head';
+  var title = document.createElement('h3'); title.className = 'announce-panel-item-title'; title.textContent = String(item.title || '公告');
+  head.appendChild(title);
+  if (item.date) { var date = document.createElement('span'); date.className = 'announce-panel-item-date'; date.textContent = String(item.date); head.appendChild(date); }
+  wrap.appendChild(head);
+  var bodyText = String(item.body || item.content || item.description || '');
+  if (bodyText) {
+    // 长文默认折叠；两三行以内的短公告直接展开，省一次点击。
+    var lines = bodyText.split(/\r?\n/).filter(function (line) { return line.trim(); }).length;
+    var details = document.createElement('details'); details.className = 'announce-panel-body'; details.open = lines <= 2;
+    var summary = document.createElement('summary'); summary.textContent = '正文'; details.appendChild(summary);
+    var text = document.createElement('div'); text.className = 'announce-panel-text';
+    announceBodyNodes(item).forEach(function (node) { text.appendChild(node); });
+    details.appendChild(text); wrap.appendChild(details);
+  }
+  var url = safeUrl(item.url);
+  if (url) {
+    var link = document.createElement('a'); link.className = 'announce-panel-link';
+    link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.textContent = '查看 Release ↗';
+    wrap.appendChild(link);
+  }
+  return wrap;
+}
+function renderAnnouncePanel() {
+  var list = document.getElementById('announce-panel-list');
+  if (!list) return;
+  list.textContent = '';
+  var items = announceItems();
+  var read = getAnnounceRead();
+  var unread = 0;
+  if (!items.length) {
+    var note = document.createElement('p'); note.className = 'announcement-muted';
+    note.textContent = announcementState ? (announcementState.ok ? '暂无公告。' : '公告暂时不可用。') : '正在读取公告…';
+    list.appendChild(note);
+  }
+  items.forEach(function (item) {
+    var isUnread = !read.includes(String(item.id));
+    if (isUnread) unread += 1;
+    list.appendChild(announcePanelItemNode(item, isUnread));
+  });
+  var count = document.getElementById('announce-panel-count');
+  if (count) count.textContent = unread ? (unread + ' 条未读') : '';
+  var readAll = document.getElementById('announce-panel-read-all');
+  if (readAll) readAll.disabled = unread === 0;
+  var hint = document.getElementById('announce-panel-hint');
+  if (hint) hint.textContent = '共 ' + items.length + ' 条';
+  syncNoticePane();
+  // 面板开着的时候内容会被异步刷新重画：条数一变高度就变，而 top 是打开那一刻按旧高度算的，
+  // 高度变大后面板底部会掉出视口（390 宽实测差 73px）。每次重画都按当前高度重定位一次。
+  repositionOpenAnnouncePanel();
+}
+// 只在面板已经展开时重定位；打开过程中的首次渲染还没量到真实高度，由 openAnnouncePanel 自己定位。
+function repositionOpenAnnouncePanel() {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel || panel.hidden || !panel.classList.contains('is-open') || !bell) return;
+  positionAnnouncePanel(panel, bell.getBoundingClientRect(), {
+    viewportWidth: document.documentElement.clientWidth, viewportHeight: window.innerHeight
+  });
+}
+// ---- 面板里的两个页签：通知（NHNotify 那叠卡）/ 公告（原设置页里的服务公告）----
+var announceTab = 'notice';
+function noticeStackCount() {
+  var stack = document.getElementById('notice-stack');
+  return stack ? stack.children.length : 0;
+}
+// 通知是瞬时卡片：有卡就显示卡，没卡给一句空状态，别让用户对着空白以为没加载出来。
+function syncNoticePane() {
+  var empty = document.getElementById('announce-pane-notice-empty');
+  if (empty) empty.hidden = noticeStackCount() > 0;
+}
+function setAnnounceTab(name) {
+  announceTab = name === 'announce' ? 'announce' : 'notice';
+  var onAnnounce = announceTab === 'announce';
+  var noticeTab = document.getElementById('announce-tab-notice');
+  var announceTabBtn = document.getElementById('announce-tab-announce');
+  if (noticeTab) noticeTab.setAttribute('aria-selected', onAnnounce ? 'false' : 'true');
+  if (announceTabBtn) announceTabBtn.setAttribute('aria-selected', onAnnounce ? 'true' : 'false');
+  var noticePane = document.getElementById('announce-pane-notice');
+  var announcePane = document.getElementById('announce-pane-announce');
+  if (noticePane) noticePane.hidden = onAnnounce;
+  if (announcePane) announcePane.hidden = !onAnnounce;
+  // 「全部标为已读」只作用于公告，通知页签下收起这一行。
+  var foot = document.getElementById('announce-panel-foot');
+  if (foot) foot.hidden = !onAnnounce;
+  var count = document.getElementById('announce-panel-count');
+  if (count && !onAnnounce) count.textContent = '';
+  var title = document.getElementById('announce-panel-title');
+  if (title) title.textContent = onAnnounce ? '公告' : '通知';
+  // 切到公告时重画一次：未读数/已读按钮状态可能已经变了。
+  if (onAnnounce) renderAnnouncePanel();
+  else syncNoticePane();
+}
+function announcePanelFocusable(panel) {
+  if (!panel || !panel.querySelectorAll) return [];
+  return Array.prototype.slice.call(panel.querySelectorAll('button, a[href], summary, [tabindex="0"]')).filter(function (node) {
+    if (!node || node.disabled || node.hidden) return false;
+    // 没选中的那个页签是 hidden 的，里头的折叠标题不该被 Tab 撞见。
+    for (var parent = node; parent; parent = parent.parentElement) { if (parent.hidden) return false; }
+    return true;
+  });
+}
+var announcePanelReturnFocus = null;
+// B5：焦点在面板外面时，绑在 panel 上的 keydown 收不到 Esc。面板打开期间把监听挂到 document
+// 捕获阶段，关闭就解绑，别让页面别处的 Esc 也被我们吞掉。
+function setAnnounceKeydown(on) {
+  if (!document.addEventListener) return;
+  if (on) document.addEventListener('keydown', announcePanelKeydown, true);
+  else document.removeEventListener('keydown', announcePanelKeydown, true);
+}
+function openAnnouncePanel() {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel) return;
+  announcePanelReturnFocus = document.activeElement || bell;
+  renderAnnouncePanel();
+  setAnnounceTab(announceTab);
+  // 打开公告栏就是要看最新的：30 秒内只强制拉一次，别每开一次都打一次网络。
+  if (Date.now() - announceForcedAt > 30 * 1000) {
+    announceForcedAt = Date.now();
+    refreshAnnouncements(true);
+  }
+  // 先让面板参与布局（此时 opacity 仍是 0，用户看不到），量到真实尺寸再定位，
+  // 最后才加 is-open 播入场动画——顺序反了 offsetHeight 是 0，clamp 会用错的身高。
+  panel.hidden = false;
+  positionAnnouncePanel(panel, bell.getBoundingClientRect(), {
+    viewportWidth: document.documentElement.clientWidth, viewportHeight: window.innerHeight
+  });
+  panel.classList.remove('is-closing');
+  panel.classList.add('is-open');
+  setAnnounceKeydown(true);
+  if (bell) bell.setAttribute('aria-expanded', 'true');
+  var close = document.getElementById('announce-panel-close');
+  if (close && close.focus) close.focus();
+}
+// 面板定位纯函数：top = 铃铛底 + 8，right = 视口右 - 铃铛右，再 clamp 进视口。
+// 单独抽出来是为了可单测（不碰真 DOM）。
+function positionAnnouncePanel(panel, bellRect, env) {
+  if (!panel || !bellRect) return;
+  var viewportWidth = (env && env.viewportWidth) || document.documentElement.clientWidth;
+  var viewportHeight = (env && env.viewportHeight) || window.innerHeight;
+  var width = panel.offsetWidth || Math.min(420, viewportWidth - 32);
+  var height = panel.offsetHeight || 320;
+  var top = bellRect.bottom + 8;
+  var right = viewportWidth - bellRect.right;
+  // clamp 时先「越高越好」：铃铛贴底时面板翻上来盖住铃铛，也别压出视口底。
+  var maxTop = Math.max(8, viewportHeight - height - 8);
+  top = Math.min(top, maxTop);
+  if (bellRect.bottom + 8 + height > viewportHeight - 8 && bellRect.top - height - 8 >= 8) {
+    top = Math.max(8, bellRect.top - height - 8);  // 下方放不下、上方放得下：翻到铃铛上面
+  }
+  top = Math.max(8, top);
+  right = Math.max(8, Math.min(right, viewportWidth - width - 8));
+  panel.style.top = top + 'px';
+  panel.style.right = right + 'px';
+}
+function closeAnnouncePanel(restoreFocus) {
+  var panel = document.getElementById('announce-panel');
+  var bell = document.getElementById('announce-bell');
+  if (!panel || panel.hidden) return;
+  // 退场 140ms：先播动画，transitionend（或兜底 180ms）后再 hidden，别用二值切换闪掉。
+  var finish = function () {
+    if (panel.classList.contains('is-open')) return;  // 退场中途又被打开：放弃隐藏
+    panel.hidden = true;
+    panel.classList.remove('is-closing');
+  };
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    || document.documentElement.dataset.motion === 'paused';
+  if (reduced) {
+    panel.hidden = true;
+  } else {
+    panel.classList.remove('is-open');
+    panel.classList.add('is-closing');
+    panel.addEventListener('transitionend', finish, {once: true});
+    window.setTimeout(finish, 180);  // 兜底：transitionend 没触发（元素已 display:none 等）
+  }
+  setAnnounceKeydown(false);
+  if (bell) bell.setAttribute('aria-expanded', 'false');
+  if (restoreFocus === false) return;
+  var target = announcePanelReturnFocus || bell;
+  if (target && target.focus) target.focus();
+}
+function announcePanelKeydown(event) {
+  if (event && event.key === 'Escape') { event.preventDefault(); closeAnnouncePanel(true); return; }
+  if (!event || event.key !== 'Tab') return;
+  var nodes = announcePanelFocusable(document.getElementById('announce-panel'));
+  if (!nodes.length) return;
+  var first = nodes[0], last = nodes[nodes.length - 1], active = document.activeElement;
+  if (event.shiftKey) { if (active === first || nodes.indexOf(active) < 0) { event.preventDefault(); last.focus(); } }
+  else if (active === last || nodes.indexOf(active) < 0) { event.preventDefault(); first.focus(); }
+}
+function setupAnnounceBell() {
+  var bell = document.getElementById('announce-bell');
+  var panel = document.getElementById('announce-panel');
+  if (!bell || !panel) return;
+  // 字形、滚动条或非重画内容也会改变高度：始终按实际尺寸贴住铃铛。
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(repositionOpenAnnouncePanel).observe(panel);
+  }
+  panel.addEventListener('transitionend', repositionOpenAnnouncePanel);
+  bell.addEventListener('click', function () { if (panel.hidden) openAnnouncePanel(); else closeAnnouncePanel(true); });
+  var noticeTab = document.getElementById('announce-tab-notice');
+  if (noticeTab) noticeTab.addEventListener('click', function () { setAnnounceTab('notice'); });
+  var announceTabBtn = document.getElementById('announce-tab-announce');
+  if (announceTabBtn) announceTabBtn.addEventListener('click', function () { setAnnounceTab('announce'); });
+  // 面板开着时来了新通知：卡片由 NHNotify 自己塞进 #notice-stack，这里只跟着收起空状态。
+  var stack = document.getElementById('notice-stack');
+  if (stack && window.MutationObserver) {
+    new MutationObserver(function () { syncNoticePane(); }).observe(stack, { childList: true });
+  }
+  var close = document.getElementById('announce-panel-close');
+  if (close) close.addEventListener('click', function () { closeAnnouncePanel(true); });
+  var readAll = document.getElementById('announce-panel-read-all');
+  if (readAll) readAll.addEventListener('click', function () {
+    markAnnounceRead(announceItems().map(function (item) { return item.id; }));
+    renderAnnounceBell(); renderAnnouncePanel(); renderAnnouncementBanner(); renderAnnounceModal();
+  });
+  // 键盘监听由 openAnnouncePanel / closeAnnouncePanel 统一挂到 document 上，这里不再绑 panel。
+  // 点面板外面关掉；点铃铛本身交给上面的 click 切换，这里跳过，免得关掉又立刻打开。
+  document.addEventListener('mousedown', function (event) {
+    if (panel.hidden) return;
+    var target = event && event.target;
+    if (panel.contains && panel.contains(target)) return;
+    if (bell.contains && bell.contains(target)) return;
+    closeAnnouncePanel(false);
+  });
+}
+// ---- 启动公告弹窗（待办台打开时弹，符合单页自己的视觉）----
+var announceModalItems = [];
+var announceModalIndex = 0;
+function getAnnounceModalSeen() {
+  try { var value = JSON.parse(localStorage.getItem('nh_ann_seen') || '[]'); return Array.isArray(value) ? value.map(String) : []; }
+  catch (error) { return []; }
+}
+function markAnnounceModalSeen(id) {
+  var ids = getAnnounceModalSeen(); ids.push(String(id));
+  try { localStorage.setItem('nh_ann_seen', JSON.stringify(Array.from(new Set(ids)).slice(-100))); } catch (error) {}
+}
+function announceItemSeen(item) {
+  if (!item || !item.id) return true;
+  if (item.seen_required) return false;  // critical / sticky：每次启动都弹
+  var id = String(item.id);
+  return getAnnounceModalSeen().includes(id) || getDismissedAnnouncements().includes(id) || getAnnounceRead().includes(id);
+}
+function appendAnnounceText(node, text) {
+  // 正文来自网络：只用 textContent / createTextNode 拼 DOM，绝不拼 HTML 字符串，
+  // 因此它没有任何被解析成标记的机会；**粗体** 之外的内容一律按纯文本显示。
+  String(text).split(/\*\*(.+?)\*\*/g).forEach(function (part, index) {
+    if (!part) return;
+    if (index % 2 === 1) { var strong = document.createElement('strong'); strong.textContent = part; node.appendChild(strong); }
+    else { node.appendChild(document.createTextNode(part)); }
+  });
+}
+function announceBodyNodes(item) {
+  var nodes = [];
+  var list = null;
+  String(item.body || item.content || item.description || '').split(/\r?\n/).forEach(function (line) {
+    var text = line.trim();
+    if (!text) { list = null; return; }
+    if (text.slice(0, 2) === '- ' || text.slice(0, 2) === '* ') {
+      if (!list) { list = document.createElement('ul'); nodes.push(list); }
+      var entry = document.createElement('li'); appendAnnounceText(entry, text.slice(2).trim()); list.appendChild(entry); return;
+    }
+    list = null;
+    var paragraph = document.createElement('p'); appendAnnounceText(paragraph, text); nodes.push(paragraph);
+  });
+  if (!nodes.length) nodes.push(document.createElement('p'));
+  return nodes;
+}
+function renderAnnounceModal() {
+  var modal = document.getElementById('announce-modal');
+  if (!modal) return;
+  var setupWizard=document.getElementById('platform-setup-wizard');
+  var updateGuide=document.getElementById('update-guide');
+  var onboarding=document.getElementById('onboarding');
+  // 公告横幅已经并进悬浮通知，这里只让首装向导、升级引导页与欢迎框优先于公告弹窗。
+  if ((setupWizard&&!setupWizard.hidden)||(updateGuide&&!updateGuide.hidden)||(onboarding&&!onboarding.hidden)){modal.hidden=true;return;}
+  var items = (announcementState && Array.isArray(announcementState.items) ? announcementState.items : []).filter(function (item) { return item && item.id && !announceItemSeen(item); });
+  announceModalItems = items;
+  if (!items.length) { modal.hidden = true; return; }
+  if (announceModalIndex >= items.length) announceModalIndex = 0;
+  var item = items[announceModalIndex];
+  modal.dataset.level = ['info', 'warning', 'critical'].includes(item.level) ? item.level : 'info';
+  var title = document.getElementById('announce-modal-title');
+  if (title) title.textContent = String(item.title || '公告');
+  var version = document.getElementById('announce-modal-version');
+  if (version) version.textContent = '当前版本 ' + String((announcementState && announcementState.current_version) || '未知');
+  var body = document.getElementById('announce-modal-body');
+  if (body) { body.textContent = ''; announceBodyNodes(item).forEach(function (node) { body.appendChild(node); }); }
+  var link = document.getElementById('announce-modal-link');
+  if (link) { var u = safeUrl(item.url); if (u) { link.href = u; link.hidden = false; } else { link.hidden = true; } }
+  var prev = document.getElementById('announce-modal-prev');
+  var next = document.getElementById('announce-modal-next');
+  var count = document.getElementById('announce-modal-count');
+  if (prev) { prev.hidden = items.length < 2; prev.disabled = announceModalIndex === 0; }
+  if (next) { next.hidden = items.length < 2; next.disabled = announceModalIndex >= items.length - 1; }
+  if (count) count.textContent = items.length > 1 ? ((announceModalIndex + 1) + ' / ' + items.length) : '';
+  // 公告只在顶部横幅里展示；不再自动弹居中窗口遮挡内容。
+}
+
+function setupAnnounceModal() {
+  var modal = document.getElementById('announce-modal');
+  if (!modal) return;
+  var okButton = document.getElementById('announce-modal-ok');
+  if (okButton) okButton.addEventListener('click', function () {
+    var item = announceModalItems[announceModalIndex];
+    if (item) markAnnounceModalSeen(item.id);
+    announceModalIndex = 0;
+    modal.hidden = true;
+    renderAnnouncementBanner();
+    renderAnnounceModal();
+  });
+  var prev = document.getElementById('announce-modal-prev');
+  if (prev) prev.addEventListener('click', function () { announceModalIndex = Math.max(0, announceModalIndex - 1); renderAnnounceModal(); });
+  var next = document.getElementById('announce-modal-next');
+  if (next) next.addEventListener('click', function () { announceModalIndex = Math.min(announceModalItems.length - 1, announceModalIndex + 1); renderAnnounceModal(); });
+  // Esc = 「我知道了」：强提示弹窗必须键盘可达；关掉就算看过，不然下次启动又弹一遍。
+  modal.addEventListener('keydown', function (event) {
+    if (event && event.key === 'Escape') { event.preventDefault(); if (okButton) okButton.click(); else modal.hidden = true; }
+  });
+}
+// 拉取失败时的提示：与公告同一条悬浮通知通道（warn 级、可关闭）。
+// 关掉后不再每 15 分钟重复弹同一句，等下一次成功刷新再撤掉、恢复正常公告。
+var announceFailureHintDismissed = false;
+var ANNOUNCE_FAILURE_NOTICE_ID = 'announce-failure';
+function renderAnnouncementFailureHint(message) {
+  if (announceFailureHintDismissed) return;
+  if (!window.NHNotify) return;
+  window.NHNotify.push({
+    id: ANNOUNCE_FAILURE_NOTICE_ID,
+    level: 'warn',
+    title: message,
+    sticky: true,          // 拉取失败要一直挂到成功或用户关掉为止
+    onDismiss: function () { announceFailureHintDismissed = true; }
+  });
+}
+// force=true 走 `?refresh=1`：服务端会真的去拉一次（自己带防抖，连点不会连打 GitHub）。
+function refreshAnnouncements(force) {
+  api('/api/announcements' + (force ? '?refresh=1' : '')).then(function (data) {
+    announcementState = data && typeof data === 'object' ? data : {ok: false, items: []};
+    announceFailureHintDismissed = false;
+    if (window.NHNotify) window.NHNotify.dismiss(ANNOUNCE_FAILURE_NOTICE_ID);
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
+    if (announcementState.checking) window.setTimeout(refreshAnnouncements, 1500);
+  }).catch(function (error) {
+    // 网络抖动不许清掉已拿到的公告：保留上次成功的 items，只把 ok 标成 false，
+    // 面板里照常显示旧列表（renderAnnouncementList 用 ok 分支的提示语仍会写「公告暂时不可用」）。
+    // 首次加载就失败（从来没拿到过数据）才落到空态。
+    var had = announcementState && Array.isArray(announcementState.items) && announcementState.items.length;
+    if (had) {
+      announcementState.ok = false;
+    } else {
+      announcementState = {ok: false, items: []};
+    }
+    renderAnnouncementBanner(); renderAnnouncementList(); renderAnnounceModal(); renderAnnounceBell(); renderAnnouncePanel();
+    // A4：拉取失败别静默——右上角给一条非阻塞提示（可关闭；下次成功刷新会自动撤掉并恢复公告）。
+    renderAnnouncementFailureHint('公告暂时无法更新，稍后会自动重试。');
+  });
+}

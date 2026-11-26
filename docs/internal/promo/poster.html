@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>济务台 · 海报 v3</title>
+<style>
+:root{
+  --paper:#F4EFE3; --raise:#FBF8F0; --sink:#EDE5D2;
+  --ink:#2E2A1E; --dim:#6B6450; --faint:#9A9380;
+  --olive:#5C6B44; --accent:#7B8B5E;
+  --line:rgba(58,58,40,.14); --line2:rgba(58,58,40,.26);
+  --serif:"Noto Serif SC","Songti SC","SimSun",serif;
+  --sans:"MiSans","Noto Sans SC","PingFang SC",sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#cfc9ba;display:flex;flex-direction:column;gap:48px;padding:48px;align-items:center}
+.poster{background:var(--paper);position:relative;overflow:hidden;color:var(--ink);flex:none}
+.eyebrow{font:400 24px/1 var(--sans);color:var(--faint);letter-spacing:.04em}
+h1{font:200 116px/1.14 var(--serif);letter-spacing:-.025em}
+h1 em{font-style:normal;color:var(--olive)}
+.lede{font:400 32px/1.7 var(--serif);color:var(--dim)}
+.tag{font:400 22px/1 var(--sans);color:var(--faint);letter-spacing:.04em}
+.tag .sep{color:var(--accent);margin:0 12px}
+.url{font:400 22px/1 var(--sans);color:var(--faint);letter-spacing:.04em}
+
+/* ── 16:9 ─────────────────────────────────────── */
+.p169{width:1920px;height:1080px}
+.p169 .left{position:absolute;left:128px;top:0;bottom:0;width:700px;display:flex;flex-direction:column;justify-content:center}
+.p169 h1{margin-top:44px;font-size:104px}
+.p169 .lede{margin-top:52px;max-width:660px;font-size:29px}
+.p169 .rule{position:absolute;left:128px;width:640px;bottom:200px;height:1px;background:var(--line2)}
+.p169 .meta{position:absolute;left:128px;bottom:112px;width:700px;display:flex;flex-direction:column;align-items:flex-start;gap:18px}
+.p169 .stage{position:absolute;left:900px;right:60px;top:240px;height:600px;border-radius:16px;overflow:hidden;box-shadow:0 50px 120px rgba(58,58,40,.26);border:1px solid rgba(58,58,40,.10);background:var(--raise)}
+.p169 .stage img{display:block;width:100%;height:100%;object-fit:contain;object-position:top left}
+.p169 .glow{position:absolute;left:820px;top:80px;width:1200px;height:960px;background:radial-gradient(ellipse at 60% 40%,rgba(123,139,94,.20),rgba(244,239,227,0) 62%);pointer-events:none}
+
+/* ── 竖版 ─────────────────────────────────────── */
+.pv{width:1080px;height:1920px}
+.pv .top{position:absolute;left:96px;right:96px;top:150px}
+.pv h1{margin-top:40px;font-size:88px;line-height:1.2}
+.pv .lede{margin-top:44px;font-size:29px;max-width:860px}
+.pv .rule{position:absolute;left:96px;width:700px;top:720px;height:1px;background:var(--line2)}
+.pv .phone{position:absolute;left:688px;top:940px;width:296px;height:640px;border-radius:28px;overflow:hidden;box-shadow:0 24px 60px rgba(46,42,30,.18);border:1px solid rgba(58,58,40,.10);background:var(--raise);z-index:2}
+.pv .phone img{display:block;width:100%;height:100%;object-fit:cover;object-position:top center}
+.pv .desk{position:absolute;left:96px;top:800px;width:888px;height:555px;border-radius:12px;overflow:hidden;box-shadow:0 30px 70px rgba(58,58,40,.22);border:1px solid rgba(58,58,40,.10);background:var(--raise)}
+.pv .desk img{display:block;width:100%;height:100%;object-fit:contain;object-position:top left}
+.pv .meta{position:absolute;left:96px;bottom:112px;display:flex;flex-direction:column;align-items:flex-start;gap:18px}
+.pv .glow{position:absolute;left:-200px;top:620px;width:1300px;height:1300px;background:radial-gradient(ellipse at 40% 50%,rgba(123,139,94,.16),rgba(244,239,227,0) 62%);pointer-events:none}
+</style>
+</head>
+<body>
+
+<!-- 16:9 -->
+<section class="poster p169" id="poster-169">
+  <div class="glow"></div>
+  <div class="left">
+    <div class="eyebrow">济务台 · 桌面端</div>
+    <h1>群里的通知，<br>自动变成<em>待办</em></h1>
+    <div class="lede">QQ 群、钉钉群、微信群、学习通，只读你勾的那几个群；要动手的事进待办台，截止日导进手机日历。数据留在这台电脑上。</div>
+  </div>
+  <div class="stage"><img src="../screenshots/desktop-tasks.png" alt=""></div>
+  <div class="rule"></div>
+  <div class="meta">
+    <span class="tag">Windows 出货包<span class="sep">·</span>安卓 App<span class="sep">·</span>源码开放<span class="sep">·</span>非商业许可</span>
+    <span class="url">github.com/ExpertKT/notice-hub</span>
+  </div>
+</section>
+
+<!-- 竖版 -->
+<section class="poster pv" id="poster-portrait">
+  <div class="glow"></div>
+  <div class="top">
+    <div class="eyebrow">济务台 · 桌面端</div>
+    <h1>群里的通知，<br>自动变成<em>待办</em></h1>
+    <div class="lede">QQ 群、钉钉群、微信群、学习通。只读你勾的那几个群，要动手的事进待办台，截止日导进手机日历。</div>
+  </div>
+  <div class="rule"></div>
+  <div class="phone"><img src="../screenshots/phone-tasks.png" alt=""></div>
+  <div class="desk"><img src="../screenshots/desktop-tasks.png" alt=""></div>
+  <div class="meta">
+    <span class="tag">Windows 出货包<span class="sep">·</span>安卓 App<span class="sep">·</span>源码开放<span class="sep">·</span>非商业许可</span>
+    <span class="url">github.com/ExpertKT/notice-hub</span>
+  </div>
+</section>
+
+</body>
+</html>
